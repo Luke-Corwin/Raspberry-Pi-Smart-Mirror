@@ -1,0 +1,30 @@
+SMART MIRROR — MATERIALS LIST
+==============================
+
+FRAME / STRUCTURE
+------------------
+- Wood plank (wide)   — frame side rail
+- Wood plank (narrow) — frame side rail
+
+MIRROR SURFACE
+------------------
+- Acrylic sheet (clear)  — mounting substrate behind the two-way film
+- Gila window film       — applied to acrylic to create the two-way mirror effect
+
+DISPLAY
+------------------
+- Monitor, 21 x 13 in (approx. viewable area) — mounted behind the two-way
+  surface, rotated to portrait orientation to fit the frame
+
+COMPUTE
+------------------
+- Raspberry Pi 5, 2GB RAM  — runs MagicMirror2
+- 64GB microSD card        — OS + software storage
+
+ALSO REQUIRED (not in the original list, but needed to run this build)
+------------------
+- USB-C power supply rated for Pi 5 (5V/5A, 27W — official Pi 5 supply recommended;
+  underpowered supplies cause the blinking-red undervoltage warning)
+- Micro-HDMI to HDMI cable (Pi 5 has micro-HDMI ports, not full-size)
+- USB mouse (temporary — only needed once, for initial desktop config; not needed
+  for day-to-day operation since everything runs headless/autostart after setup)

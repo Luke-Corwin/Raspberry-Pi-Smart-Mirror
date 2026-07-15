@@ -1,0 +1,241 @@
+SMART MIRROR — BUILD COMMAND LOG
+=================================
+Raspberry Pi 5 (2GB) + MagicMirror2, portrait orientation, autostart on boot.
+Commands are grouped by phase, in the order they were actually run.
+
+
+PHASE 1 — FLASH THE OS
+------------------------
+Tool: Raspberry Pi Imager (on your computer, not the Pi itself)
+
+- OS image:  Raspberry Pi OS (64-bit) — the DESKTOP version, not Lite.
+             (MagicMirror runs through Electron, which requires a desktop
+             environment — Lite will not work for this build.)
+- In Imager's advanced/gear settings before writing:
+    - set hostname
+    - enable SSH
+    - set username/password
+    - enter WiFi credentials
+  This lets you connect over SSH on first boot with no monitor/keyboard needed.
+
+
+PHASE 2 — FIRST BOOT & SYSTEM UPDATE
+--------------------------------------
+Connect from your computer:
+
+    ssh pi@hostname.local
+
+(If you ever reflash the SD card and reuse the same hostname, your computer
+will show a "REMOTE HOST IDENTIFICATION HAS CHANGED" warning — that's normal,
+not an attack. Fix with:  ssh-keygen -R hostname.local  then reconnect.)
+
+Update the system:
+
+    sudo apt update && sudo apt full-upgrade -y
+    sudo reboot
+
+
+PHASE 3 — INSTALL NODE.JS 22
+------------------------------
+MagicMirror2 requires Node 22 or newer.
+
+    curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
+    sudo apt install -y nodejs
+    node -v   # confirm it prints v22.x or higher
+
+
+PHASE 4 — INSTALL MAGICMIRROR2
+---------------------------------
+    cd ~
+    git clone https://github.com/MagicMirrorOrg/MagicMirror
+    cd MagicMirror
+    node --run install-mm
+
+(This step is slow — 5-10+ minutes with little/no output. Let it run, don't
+Ctrl+C out of it.)
+
+    cp config/config.js.sample config/config.js
+    node --run start
+
+Monitor must already be connected via HDMI at this point to see anything.
+
+
+PHASE 5 — WAYLAND vs X11
+---------------------------
+Default `node --run start` uses Wayland/Electron, which had rendering
+problems on this hardware (blank/black window). Fallback that worked:
+
+    node --run start:x11
+
+Ctrl+C stops it in either case.
+
+
+PHASE 6 — TIMEZONE FIX
+-------------------------
+    sudo raspi-config
+    → Localisation Options → Timezone → (select correct zone)
+
+
+PHASE 7 — AUTOSTART, ATTEMPT #1: PM2 (did not work for this)
+----------------------------------------------------------------
+    sudo npm install -g pm2
+    pm2 start ~/MagicMirror/installers/pm2_MagicMirror.json
+    pm2 save
+    pm2 startup   # then run the command IT prints
+
+NOTE: This did not actually launch MagicMirror on boot. `pm2 status` later
+showed an empty process table — PM2's systemd hook runs before/outside the
+desktop session, so Electron has no display to render into. Diagnosed with:
+
+    pm2 status
+    pm2 logs MagicMirror --lines 30
+
+Abandoned in favor of Phase 9 below.
+
+
+PHASE 8 — DESKTOP AUTOLOGIN
+------------------------------
+Needed so the Pi boots straight to desktop instead of sitting on a login
+prompt (required for the autostart method in Phase 9 to have a session to
+launch into).
+
+    sudo raspi-config nonint do_boot_behaviour B4
+    sudo reboot
+
+(B4 = Desktop Autologin. This nonint command is more reliable than digging
+through the interactive menu, since exact menu wording differs across OS
+versions.)
+
+
+PHASE 9 — AUTOSTART, ATTEMPT #2: labwc autostart (this is what worked)
+----------------------------------------------------------------------------
+Raspberry Pi OS (Bookworm/Trixie) uses the labwc Wayland compositor, which
+has its own autostart file that runs once the desktop session is live —
+this is what actually gets Electron a real display to render into.
+
+    mkdir -p ~/.config/labwc
+    nano ~/.config/labwc/autostart
+
+Initial content (rotation line added later in Phase 11):
+
+    cd ~/MagicMirror && node --run start:x11 &
+
+Save in nano: Ctrl+O, Enter, Ctrl+X.  Then:
+
+    sudo reboot
+
+GOTCHA: pasting multi-line content into nano over this SSH client merged
+lines together with no newline between them (e.g. two commands ran together
+on one line, launching MagicMirror twice and silently breaking it). Fix:
+before typing, clear the file with Ctrl+K repeated at top of file, then type
+each line separately pressing Enter after each — don't paste as one block.
+Verify with `cat ~/.config/labwc/autostart` before rebooting.
+
+
+PHASE 10 — PORTRAIT ROTATION
+-------------------------------
+First attempt used xrandr — this FAILED with a BadMatch/RRSetScreenSize
+error, because start:x11 runs through Xwayland (an X11 compatibility layer),
+and the real screen output is owned by the Wayland compositor underneath —
+Xwayland can't grant the screen resize that rotation needs.
+
+    DISPLAY=:0 xrandr                                  # (didn't work)
+    DISPLAY=:0 xrandr --output HDMI-1 --rotate left     # (BadMatch error)
+
+CORRECT tool: wlr-randr, which talks to the real compositor.
+
+    ls -la /run/user/$(id -u)/
+    # confirm the actual wayland socket name present, e.g. wayland-0
+
+    XDG_RUNTIME_DIR=/run/user/$(id -u) WAYLAND_DISPLAY=wayland-0 wlr-randr
+    # lists real output name, e.g. HDMI-A-2
+
+    XDG_RUNTIME_DIR=/run/user/$(id -u) WAYLAND_DISPLAY=wayland-0 wlr-randr \
+      --output HDMI-A-2 --transform 90
+    # look at the monitor — if upside-down/backwards, use --transform 270 instead
+
+
+PHASE 11 — FINAL AUTOSTART FILE (rotation + launch combined)
+------------------------------------------------------------------
+    nano ~/.config/labwc/autostart
+
+Final contents (three separate lines):
+
+    XDG_RUNTIME_DIR=/run/user/1000 WAYLAND_DISPLAY=wayland-0 wlr-randr --output HDMI-A-2 --transform 90 &
+    sleep 2
+    cd ~/MagicMirror && node --run start:x11 &
+
+(1000 is the standard UID for the default "pi" user; confirm with `id -u`
+if unsure. The `sleep 2` gives the rotation time to apply before Electron
+launches, so MagicMirror opens already sized correctly.)
+
+Save (Ctrl+O, Enter, Ctrl+X), verify with `cat`, then:
+
+    sudo reboot
+
+
+PHASE 12 — SHUTDOWN PROCEDURE
+--------------------------------
+    sudo shutdown -h now
+
+Wait for the monitor to go fully dark AND the green activity LED to stop
+blinking before pulling power — that's confirmation the SD card is done
+writing. Safe to unplug only after that.
+
+NOTE on the red LED: solid red after shutdown is normal (board confirming
+clean power-off). Only a BLINKING red LED indicates an actual problem
+(insufficient power supply).
+
+
+PHASE 13 — MONITOR BRIGHTNESS (optional, only if your monitor supports DDC/CI)
+-----------------------------------------------------------------------------------
+    sudo apt install ddcutil -y
+    sudo ddcutil detect
+    sudo ddcutil getvcp 10      # read current brightness (0-100 scale)
+    sudo ddcutil setvcp 10 80   # set brightness to 80
+
+If `ddcutil detect` finds nothing, your monitor doesn't expose DDC/CI (or it's
+disabled in the monitor's own menu) — brightness has to be set with the
+monitor's physical buttons instead.
+
+
+PHASE 14 — PUSH THE PROJECT TO GITHUB
+-----------------------------------------
+Build a small portfolio repo with just the custom files (not the entire
+MagicMirror2 codebase, which is a separate open-source project):
+
+    mkdir ~/smart-mirror-portfolio
+    cp ~/MagicMirror/config/config.js ~/smart-mirror-portfolio/
+    cp ~/MagicMirror/css/custom.css ~/smart-mirror-portfolio/ 2>/dev/null
+    cp ~/.config/labwc/autostart ~/smart-mirror-portfolio/
+    cd ~/smart-mirror-portfolio
+
+Set git identity (needed once, before your first-ever commit on this Pi):
+
+    git config --global user.email "you@example.com"
+    git config --global user.name "Your Name"
+
+    git init
+    git add .
+    git commit -m "Smart mirror build: MagicMirror on Pi 5, portrait rotation"
+    git branch -M main
+
+Create an empty repo on github.com first (no README/gitignore/license boxes
+checked), then connect and push — replace the URL below with your real
+GitHub username and repo name, no angle brackets:
+
+    git remote add origin https://github.com/YOUR_USERNAME/YOUR_REPO.git
+    git push -u origin main
+
+GOTCHA: GitHub no longer accepts your account password for this over HTTPS.
+Either use a Personal Access Token in place of the password, or set up SSH
+instead (recommended if you'll keep updating this repo):
+
+    ssh-keygen -t ed25519 -C "your_email@example.com"
+    cat ~/.ssh/id_ed25519.pub
+    # copy this, add it at: github.com → Settings → SSH and GPG keys → New SSH key
+
+    git remote remove origin
+    git remote add origin git@github.com:YOUR_USERNAME/YOUR_REPO.git
+    git push -u origin main
+    # first push asks to confirm GitHub's host fingerprint — type yes
